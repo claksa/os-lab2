@@ -13,6 +13,7 @@
 #include <linux/netdevice.h>
 #include <net/net_namespace.h>
 #include <linux/string.h>
+#include <linux/spinlock.h>
 
 #include <linux/errno.h>
 #include <asm/uaccess.h>
@@ -35,17 +36,19 @@ static struct class *cl;
 
 static char c;
 query_cpu_itimer q_it;
-query_net_device q_net;
-
+net_device_data net_dd;
+static arch_spinlock_t spinlock = __ARCH_SPIN_LOCK_UNLOCKED;
 
 static int my_open(struct inode *i, struct file *f)
 {
+    arch_spin_lock(&spinlock);
     printk(KERN_INFO "my driver: open\n");
     return 0;
 }
 
 static int my_close(struct inode *i, struct file *f)
 {
+    arch_spin_unlock(&spinlock);
     printk(KERN_INFO "my_driver: close\n");
     return 0;
 }
@@ -57,6 +60,14 @@ static long my_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
     struct net* net;
     struct pid *pid;
     struct net_device *net_dev;
+
+    int size = NR_NETD * sizeof(query_net_device);
+    net_dd.q_net_list = (query_net_device*) kmalloc(size, GFP_KERNEL);
+    if (!net_dd.q_net_list) {
+        pr_err("unable to allocate mem for net_dev_list\n");
+        return -ENOMEM;
+    }
+
     switch (cmd)
     {
         case QUERY_SET_CPU_ITIMER:
@@ -97,35 +108,42 @@ static long my_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
             pr_info("cpu_itimer copied to user space\n");
             break;
         case QUERY_SET_NET_DEVICE:
-            if ( copy_from_user(&q_net, (query_net_device*) arg, sizeof(query_net_device)) )
+            if ( copy_from_user(&net_dd, (net_device_data*) arg, sizeof(net_device_data)) )
             {
                 pr_err("net_device write fail\n");
                 return -EACCES;
             }
-            net = get_net_ns_by_pid(q_net.pid);
+            net = get_net_ns_by_pid(net_dd.pid);
             if (!net) {
-                pr_err("cannot find net struct by pid %d\n", q_net.pid);
+                pr_err("cannot find net struct by pid %d\n", net_dd.pid);
                 return -ESRCH;
             }
+
+            int i = 0;
             read_lock(&dev_base_lock);
-            net_dev = first_net_device(net);
-            read_unlock(&dev_base_lock);
-            pr_info("found [%s]\n", net_dev->name);
-            q_net.base_addr = net_dev->base_addr;
-            q_net.dma = net_dev->dma;
-            q_net.if_port = net_dev->if_port;
-            q_net.irq = net_dev->irq;
-            q_net.mem_end = net_dev->mem_end;
-            q_net.mem_start = net_dev->mem_start;
-            strcpy(q_net.name, net_dev->name);
-            q_net.state = net_dev->state;
-            break;
-        case QUERY_GET_NET_DEVICE:
-            if ( copy_to_user((query_net_device *) arg, &q_net, sizeof(query_net_device)) )
+            for_each_netdev(net, net_dev)
             {
+                pr_info("found [%s]\n", net_dev->name);
+                net_dd.q_net_list[i].base_addr = net_dev->base_addr;
+                net_dd.q_net_list[i].dma = net_dev->dma;
+                net_dd.q_net_list[i].if_port = net_dev->if_port;
+                net_dd.q_net_list[i].irq = net_dev->irq;
+                net_dd.q_net_list[i].mem_end = net_dev->mem_end;
+                net_dd.q_net_list[i].mem_start = net_dev->mem_start;
+                strcpy(net_dd.q_net_list[i].name, net_dev->name);
+                pr_info("found [%s]\n", net_dd.q_net_list[i].name);
+                net_dd.q_net_list[i].state = net_dev->state;
+                ++i;
+            }
+            read_unlock(&dev_base_lock);
+            if ( copy_to_user( (net_device_data*) arg, &net_dd, sizeof(net_device_data)) )
+            {
+                kfree(net_dd.q_net_list);
                 return -EACCES;
             }
             pr_info("net_device copied to user space\n");
+            break;
+        case QUERY_GET_NET_DEVICE:
             break;
         default:
             return -EINVAL;

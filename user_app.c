@@ -8,13 +8,14 @@
 
 #include "query_ioctl.h"
 
-void get_cpu_itimer_structure(int fd, int pid, int clock_type)
+void get_cpu_itimer_structure(int fd, int pid, int clk_id)
 {
     query_cpu_itimer q_it;
     q_it.pid = pid;
-    q_it.cl_id = clock_type;
+    q_it.cl_id = clk_id;
     printf("entered pid: %d\n", q_it.pid);
-    printf("entered clock_type: %s\n", &cl_str[q_it.cl_id]);
+    printf("entered clock_id: %d\n", clk_id);
+    printf("entered clock_type: %s\n", cl_str[q_it.cl_id]);
     if ( ioctl(fd, QUERY_SET_CPU_ITIMER, &q_it) == -1 )
     {
         perror("ioctl cpu_itimer set");
@@ -27,32 +28,41 @@ void get_cpu_itimer_structure(int fd, int pid, int clock_type)
     }
 }
 
-void print_net_device(query_net_device *q_net)
+void print_net_device(query_net_device *q_net_list)
 {
-    printf("---NET_DEVICE---\n");
-    printf("\tname: %s\n", q_net->name);
-    printf("\tmem_start: %lu\n", q_net->mem_start);
-    printf("\tmem_end: %lu\n", q_net->mem_end);
-    printf("\tbase_addr: %lu\n", q_net->base_addr);
-    printf("\tstate: %lu\n", q_net->state);
-    printf("\tirq: %d\n", q_net->irq);
-    printf("\tif_port: %u\n", q_net->if_port);
-    printf("\tdma: %u\n", q_net->dma);
+    for (int i = 0; i < NR_NETD; ++i)
+    {
+        printf("---NET_DEVICE---\n");
+        printf("name: %s\n", q_net_list[i].name);
+        printf("mem_start: %lu\n", q_net_list[i].mem_start);
+        printf("mem_end: %lu\n", q_net_list[i].mem_end);
+        printf("base_addr: %lu\n", q_net_list[i].base_addr);
+        printf("state: %lu\n", q_net_list[i].state);
+        printf("irq: %d\n", q_net_list[i].irq);
+        printf("if_port: %u\n", q_net_list[i].if_port);
+        printf("dma: %u\n", q_net_list[i].dma);
+        printf("\n");
+    }
 }
 
 void get_net_device_structure(int fd, int pid)
 {
-    query_net_device q_net;
-    q_net.pid = pid;
-    printf("entered pid: %d\n", q_net.pid);
-    if ( ioctl(fd, QUERY_SET_NET_DEVICE, &q_net) == -1 )
+    net_device_data net_dd;
+    query_net_device *q_net = (query_net_device*) malloc(NR_NETD * sizeof(query_net_device));
+    if (!q_net){
+        fprintf(stderr, "failed mem alloc");
+        return;
+    }
+    net_dd.pid = pid;
+    net_dd.q_net_list = q_net;
+    net_dd.q_net_list[0].pid = pid;
+    printf("entered pid: %d\n", net_dd.pid);
+    if ( ioctl(fd, QUERY_SET_NET_DEVICE, &net_dd) == -1 )
     {
         perror("ioctl net_device set");
     }
-    if ( ioctl(fd, QUERY_GET_NET_DEVICE, &q_net) == -1 )
-    {
-        perror("ioctl net_device get");
-    } else print_net_device(&q_net);
+    print_net_device(net_dd.q_net_list);
+    free(q_net);
 }
 
 // ./user_app struct_type pid cpu_type (if it needs)
@@ -60,7 +70,7 @@ int main(int argc, char *argv[])
 {
     char *file_name = "/dev/my-ioctl";
     int fd, pid;
-    clock_type clk_id;
+    int clk_id;
 
     enum
     {
@@ -112,6 +122,7 @@ int main(int argc, char *argv[])
     switch (query_struct)
     {
         case CPU_ITIMER:
+            clk_id = atoi(argv[3]);
             get_cpu_itimer_structure(fd, pid, clk_id);
             break;
         case NET_DEVICE:
